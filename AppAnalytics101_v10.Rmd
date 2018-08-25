@@ -1,0 +1,644 @@
+---
+title: "MyDigital Showcase"
+output:
+  html_document:
+    df_print: paged
+---
+```{r global_options, include=FALSE, echo=FALSE,message=FALSE,warning=FALSE}
+# knitr::opts_chunk$set(fig.width=12, fig.height=8, fig.path='Figs/',
+#                       echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+```{r include=FALSE, cache=FALSE}
+library(bigrquery)
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(reshape2)
+library(lubridate)
+library(scales)
+library(stringr)
+library(collapsibleTree)
+library(tidyverse)
+```
+## Firebase has a complex data Structure  
+All user events are stored in single nested rows which eliminates the need for joins
+```{r,echo=FALSE,message=FALSE,warning=FALSE}
+# Data from US Forest Service DataMart
+DataStruct <- read.csv("DataTreeStructure.csv")
+
+collapsibleTree(
+  DataStruct,
+  hierarchy = c("Level1", "Level2", "Level3", "Level4","Level5") 
+  # fill = c(
+  #   # The root
+  #   "seashell",
+  #   # Unique regions
+  #   rep("brown", length(unique(species$REGION))),
+  #   # Unique classes per region
+  #   rep("khaki", length(unique(paste(species$REGION, species$CLASS)))),
+  #   # Unique names per region
+  #   rep("forestgreen", length(unique(paste(species$NAME, species$REGION))))
+  # )
+)
+```
+
+### We want to understand how the user base is interacting and using our app   
+***
+But first let's start with the descriptive statistics:   
+1. How many users have downloaded the app?  
+2. How many of those users are active?  
+
+```{r echo=FALSE,message=FALSE,warning=FALSE}
+# Use your project ID here
+project_id <- "digital-showcase-app-fbb95" # put your project ID here
+
+# Example query
+
+sql_string <- "
+#standardSQL
+SELECT
+ user_dim.app_info.app_instance_id,
+ DATE(TIMESTAMP_MICROS(CAST(user_dim.first_open_timestamp_micros AS INT64))) AS dt,
+'IOS' as platform
+FROM `digital-showcase-app-fbb95.com_marykay_showandsell_IOS.app_events_*`
+WHERE
+  _TABLE_SUFFIX BETWEEN '20180511' AND '20180614'
+
+UNION ALL
+
+SELECT
+ user_dim.app_info.app_instance_id,
+ DATE(TIMESTAMP_MICROS(CAST(user_dim.first_open_timestamp_micros AS INT64))) AS dt,
+'Android' as platform
+FROM `digital-showcase-app-fbb95.com_scrollMotion_maryKay_ANDROID.app_events_*`
+WHERE
+  _TABLE_SUFFIX BETWEEN '20180511' AND '20180614'
+"
+
+# Execute the query and store the result
+
+query_results <- query_exec(sql_string, project = project_id, use_legacy_sql = FALSE)
+
+new_downloads <- query_results %>%
+  distinct(app_instance_id,dt,platform) %>%
+  group_by(dt,platform)%>%
+  summarise(downloads = length(app_instance_id)) 
+
+new_downloads %>%
+    ggplot(aes(dt,downloads,group = platform)) + geom_line(aes(color= platform)) + labs(title = "Daily app downloads", y = "# Downloads", x = element_blank()) + scale_x_date(date_breaks = "4 day", date_labels =  "%b %d")  + annotate("text", label = "Launch Period", x = as.Date("2018-05-12"), y = 350, color = "Red") + theme(axis.text.x=element_text(angle=45, hjust=1))
+
+```
+  
+#### and looking at downloads across mobile and tablet
+```{r echo=FALSE,message=FALSE,warning=FALSE}
+sql_string <- "
+#standardSQL
+SELECT
+ user_dim.app_info.app_instance_id,
+ DATE(TIMESTAMP_MICROS(CAST(user_dim.first_open_timestamp_micros AS INT64))) AS dt,
+user_dim.device_info.device_category as category
+FROM `digital-showcase-app-fbb95.com_marykay_showandsell_IOS.app_events_*`
+WHERE
+  _TABLE_SUFFIX BETWEEN '20180511' AND '20180614'
+
+UNION ALL
+
+SELECT
+ user_dim.app_info.app_instance_id,
+ DATE(TIMESTAMP_MICROS(CAST(user_dim.first_open_timestamp_micros AS INT64))) AS dt,
+user_dim.device_info.device_category as category
+FROM `digital-showcase-app-fbb95.com_scrollMotion_maryKay_ANDROID.app_events_*`
+WHERE
+  _TABLE_SUFFIX BETWEEN '20180511' AND '20180614'
+"
+
+# Execute the query and store the result
+
+DownDevice <- query_exec(sql_string, project = project_id, use_legacy_sql = FALSE)
+
+DownDevice <- DownDevice %>%
+  distinct(app_instance_id,dt,category) %>%
+  group_by(dt,category)%>%
+  summarise(downloads = length(app_instance_id)) 
+
+DownDevice %>%
+    ggplot(aes(dt,downloads,group = category)) + geom_line(aes(color= category)) + labs( y = "# Downloads", x = element_blank()) + scale_x_date(date_breaks = "4 day", date_labels =  "%b %d")  + annotate("text", label = "Launch Period", x = as.Date("2018-05-12"), y = 350, color = "Red") + theme(axis.text.x=element_text(angle=45, hjust=1))
+
+```
+
+### To analyze the user behavior, let's start by looking at the frequency of usage  
+
+*These numbers represent weekly user frequency/app opens*
+```{r echo=FALSE,message=FALSE,warning=FALSE}
+sql_string <- "
+#standardSQL
+SELECT user_dim.app_info.app_instance_id, 
+PARSE_DATE('%Y%m%d',event.date) dt,
+'IOS' as platform
+FROM `digital-showcase-app-fbb95.com_marykay_showandsell_IOS.app_events_*`,
+UNNEST(event_dim) as event,
+UNNEST(event.params) as param
+WHERE event.name = 'session_start' AND param.key = 'firebase_event_origin' AND
+  _TABLE_SUFFIX BETWEEN '20180511' AND '20180614'
+
+UNION ALL
+
+SELECT user_dim.app_info.app_instance_id, 
+PARSE_DATE('%Y%m%d',event.date) dt,
+'Android' as platform
+FROM `digital-showcase-app-fbb95.com_scrollMotion_maryKay_ANDROID.app_events_*`,
+UNNEST(event_dim) as event,
+UNNEST(event.params) as param
+WHERE event.name = 'session_start' AND param.key = 'firebase_event_origin' AND
+  _TABLE_SUFFIX BETWEEN '20180511' AND '20180614'
+"
+
+usage_freq <- query_exec(sql_string, project = project_id, use_legacy_sql = FALSE)
+
+monthly_usage <- usage_freq %>%
+  mutate(week_end = ceiling_date(dt, "week")) %>%
+  group_by(week_end,platform) %>%
+  summarise(count = length(app_instance_id))
+
+monthly_usage %>%
+  ggplot(aes(x = week_end, y = count, fill = platform)) + 
+  geom_bar(stat = "identity",position = "dodge") + 
+  labs(title = "App usage across weeks (Platforms)", x = "Week Ending Dates", y = "# App Open") + 
+  theme(plot.title = element_text(hjust = 0.5),axis.text.x=element_text(angle=45, hjust=1)) + 
+  scale_x_date(date_breaks = "1 week", date_labels =  "%b %d")
+
+```
+
+### Does the frequency of usage differ across devices as well?  
+- Activity level resonates with the existing customer base 
+
+
+```{r echo=FALSE,message=FALSE,warning=FALSE}
+sql_string <- "
+#standardSQL
+SELECT user_dim.app_info.app_instance_id, 
+PARSE_DATE('%Y%m%d',event.date) dt,
+user_dim.device_info.device_category as category
+FROM `digital-showcase-app-fbb95.com_marykay_showandsell_IOS.app_events_*`,
+UNNEST(event_dim) as event,
+UNNEST(event.params) as param
+WHERE event.name = 'session_start' AND param.key = 'firebase_event_origin' AND
+  _TABLE_SUFFIX BETWEEN '20180511' AND '20180614'
+
+UNION ALL
+
+SELECT user_dim.app_info.app_instance_id, 
+PARSE_DATE('%Y%m%d',event.date) dt,
+user_dim.device_info.device_category as category
+FROM `digital-showcase-app-fbb95.com_scrollMotion_maryKay_ANDROID.app_events_*`,
+UNNEST(event_dim) as event,
+UNNEST(event.params) as param
+WHERE event.name = 'session_start' AND param.key = 'firebase_event_origin' AND
+  _TABLE_SUFFIX BETWEEN '20180511' AND '20180614'
+"
+
+UsageCategory <- query_exec(sql_string, project = project_id, use_legacy_sql = FALSE)
+
+# CategoryWeekly <- UsageCategory %>%
+#   mutate(week = week(dt)) %>%
+#   group_by(week,category) %>%
+#   summarise(count = length(app_instance_id))
+
+CategoryWeekly <- UsageCategory %>%
+  mutate(week_end = ceiling_date(dt, "week")) %>%
+  group_by(week_end,category) %>%
+  summarise(count = length(app_instance_id))
+
+CategoryWeekly %>%
+  ggplot(aes(x = week_end, y = count, fill = category)) + geom_bar(stat = "identity", position = "dodge") + labs(title = "App usage across weeks (Devices)", x = "Week Ending Dates", y = "# App Opens") + theme(plot.title = element_text(hjust = 0.5),axis.text.x=element_text(angle=45, hjust=1)) + scale_x_date(date_breaks = "1 week", date_labels =  "%b %d")
+
+```
+
+### Further analyzing users' engagement with the app
+1. How do users interact and engage with the app?
+2. How long are the Users interacting with the app?  
+3. Where are they spending most of their time?  
+
+*Box plot represents the distribution of duration for all open session*
+
+```{r echo=FALSE,message=FALSE,warning=FALSE}
+
+sql_string <- "
+#standardSQL
+(SELECT app_instance_id, sess_id, MIN(min_time) sess_start, MAX(max_time) sess_end, COUNT(*) records, MAX(sess_id) OVER(PARTITION BY app_instance_id) total_sessions,
+   (ROUND((MAX(max_time)-MIN(min_time))/60,1)) sess_length_min, 
+'IOS' as platform
+FROM (
+  SELECT *, SUM(session_start) OVER(PARTITION BY app_instance_id ORDER BY min_time) sess_id
+  FROM (
+    SELECT *, IF(
+                previous IS null 
+                OR (min_time-previous)>(20*60),  # sessions broken by this inactivity 
+                1, 0) session_start 
+                #https://blog.modeanalytics.com/finding-user-sessions-sql/
+    FROM (
+      SELECT *, LAG(max_time, 1) OVER(PARTITION BY app_instance_id ORDER BY max_time) previous
+      FROM (
+        SELECT user_dim.app_info.app_instance_id
+          , (SELECT MIN(UNIX_SECONDS(TIMESTAMP_MICROS(CAST(timestamp_micros as INT64)))) FROM UNNEST(event_dim)) min_time
+          , (SELECT MAX(UNIX_SECONDS(TIMESTAMP_MICROS(CAST(timestamp_micros as INT64)))) FROM UNNEST(event_dim)) max_time
+        FROM `digital-showcase-app-fbb95.com_marykay_showandsell_IOS.app_events_*`
+        WHERE _TABLE_SUFFIX BETWEEN '20180511' AND '20180614'
+      )
+    )
+  )
+)
+GROUP BY 1, 2
+ORDER BY 1, 2
+)
+UNION ALL
+(
+SELECT app_instance_id, sess_id, MIN(min_time) sess_start, MAX(max_time) sess_end, COUNT(*) records, MAX(sess_id) OVER(PARTITION BY app_instance_id) total_sessions,
+   (ROUND((MAX(max_time)-MIN(min_time))/60,1)) sess_length_min,
+'Android' as platform
+FROM (
+  SELECT *, SUM(session_start) OVER(PARTITION BY app_instance_id ORDER BY min_time) sess_id
+  FROM (
+    SELECT *, IF(
+                previous IS null 
+                OR (min_time-previous)>(20*60),  # sessions broken by this inactivity 
+                1, 0) session_start 
+                #https://blog.modeanalytics.com/finding-user-sessions-sql/
+    FROM (
+      SELECT *, LAG(max_time, 1) OVER(PARTITION BY app_instance_id ORDER BY max_time) previous
+      FROM (
+        SELECT user_dim.app_info.app_instance_id
+          , (SELECT MIN(UNIX_SECONDS(TIMESTAMP_MICROS(CAST(timestamp_micros as INT64)))) FROM UNNEST(event_dim)) min_time
+          , (SELECT MAX(UNIX_SECONDS(TIMESTAMP_MICROS(CAST(timestamp_micros as INT64)))) FROM UNNEST(event_dim)) max_time
+        FROM `digital-showcase-app-fbb95.com_scrollMotion_maryKay_ANDROID.app_events_*`
+        WHERE _TABLE_SUFFIX BETWEEN '20180511' AND '20180614'
+      )
+    )
+  )
+)
+GROUP BY 1, 2
+ORDER BY 1, 2)
+"
+session_length <- query_exec(sql_string, project = project_id, use_legacy_sql = FALSE)
+
+
+
+#session_length %>%
+#  ggplot(aes(platform,sess_length_seconds)) +  geom_boxplot(aes(color=platform),outlier.colour = NA) +
+# scale_y_log10(breaks = trans_breaks("log10", function(x) 10^x), labels = trans_format("log10", math_format(10^.x))) +
+# theme_bw()
+meanFunction <- function(x){
+return(data.frame(y=round(mean(x),2),label=round(mean(x,na.rm=T),2)))}
+
+session_length %>% 
+  #filter(sess_length_min > 0.15) %>%
+  ggplot(aes(platform,sess_length_min)) +  
+  geom_boxplot(aes(color=platform),outlier.shape = NA) + 
+  coord_cartesian(ylim = c(0, 15)) + 
+  labs(title="User engagement across platform", x="", y="Engagement duration (in min)", caption="Timeframe 2018-05-11 to 2018-06-14 ") +  
+    theme(plot.title = element_text(hjust = 0.5)) +
+stat_summary(fun.y = mean, geom="point",colour="darkred", size=4) +
+stat_summary(fun.data = meanFunction, geom="text", size = 4, vjust=1.3)
+
+t.test(data = session_length,sess_length_min ~ platform)
+
+```
+
+### Are the consultants using the digital showcase app as a replacement for the physical flipchart?  
+  
+*Box plot represents the distribution of duration for all open session*
+
+
+```{r echo=FALSE,message=FALSE,warning=FALSE}
+sql_string <- "
+#standardSQL
+(SELECT app_instance_id, category,sess_id, MIN(min_time) sess_start, MAX(max_time) sess_end, COUNT(*) records, MAX(sess_id) OVER(PARTITION BY app_instance_id) total_sessions,
+   (ROUND((MAX(max_time)-MIN(min_time))/60,1)) sess_length_min
+FROM (
+  SELECT *, SUM(session_start) OVER(PARTITION BY app_instance_id ORDER BY min_time) sess_id
+  FROM (
+    SELECT *, IF(
+                previous IS null 
+                OR (min_time-previous)>(20*60),  # sessions broken by this inactivity 
+                1, 0) session_start 
+                #https://blog.modeanalytics.com/finding-user-sessions-sql/
+    FROM (
+      SELECT *, LAG(max_time, 1) OVER(PARTITION BY app_instance_id ORDER BY max_time) previous
+      FROM (
+        SELECT user_dim.app_info.app_instance_id, user_dim.device_info.device_category as category 
+          , (SELECT MIN(UNIX_SECONDS(TIMESTAMP_MICROS(CAST(timestamp_micros as INT64)))) FROM UNNEST(event_dim)) min_time
+          , (SELECT MAX(UNIX_SECONDS(TIMESTAMP_MICROS(CAST(timestamp_micros as INT64)))) FROM UNNEST(event_dim)) max_time
+        FROM `digital-showcase-app-fbb95.com_marykay_showandsell_IOS.app_events_*`
+        WHERE _TABLE_SUFFIX BETWEEN '20180511' AND '20180614'
+      )
+    )
+  )
+)
+GROUP BY 1, 2, 3
+ORDER BY 1, 2, 3
+)
+UNION ALL
+(
+SELECT app_instance_id, category, sess_id, MIN(min_time) sess_start, MAX(max_time) sess_end, COUNT(*) records, MAX(sess_id) OVER(PARTITION BY app_instance_id) total_sessions,
+   (ROUND((MAX(max_time)-MIN(min_time))/60,1)) sess_length_min
+FROM (
+  SELECT *, SUM(session_start) OVER(PARTITION BY app_instance_id ORDER BY min_time) sess_id
+  FROM (
+    SELECT *, IF(
+                previous IS null 
+                OR (min_time-previous)>(20*60),  # sessions broken by this inactivity 
+                1, 0) session_start 
+                #https://blog.modeanalytics.com/finding-user-sessions-sql/
+    FROM (
+      SELECT *, LAG(max_time, 1) OVER(PARTITION BY app_instance_id ORDER BY max_time) previous
+      FROM (
+        SELECT user_dim.app_info.app_instance_id , user_dim.device_info.device_category as category 
+          , (SELECT MIN(UNIX_SECONDS(TIMESTAMP_MICROS(CAST(timestamp_micros as INT64)))) FROM UNNEST(event_dim)) min_time
+          , (SELECT MAX(UNIX_SECONDS(TIMESTAMP_MICROS(CAST(timestamp_micros as INT64)))) FROM UNNEST(event_dim)) max_time
+        FROM `digital-showcase-app-fbb95.com_scrollMotion_maryKay_ANDROID.app_events_*`
+        WHERE _TABLE_SUFFIX BETWEEN '20180511' AND '20180614'
+      )
+    )
+  )
+)
+GROUP BY 1, 2,3
+ORDER BY 1, 2,3)
+"
+SessionLengthDevices <- query_exec(sql_string, project = project_id, use_legacy_sql = FALSE)
+
+
+
+#session_length %>%
+#  ggplot(aes(platform,sess_length_seconds)) +  geom_boxplot(aes(color=platform),outlier.colour = NA) +
+# scale_y_log10(breaks = trans_breaks("log10", function(x) 10^x), labels = trans_format("log10", math_format(10^.x))) +
+# theme_bw()
+
+meanFunction <- function(x){
+return(data.frame(y=round(mean(x),2),label=round(mean(x,na.rm=T),2)))}
+
+SessionLengthDevices %>% 
+  #filter(sess_length_min > 0.15) %>%
+  ggplot(aes(category,sess_length_min)) + 
+  geom_boxplot(aes(color=category),outlier.shape = NA) + 
+  coord_cartesian(ylim = c(0, 20)) + labs(title="User engagement across devices",x="", y="Engagement duration (in min)", caption="Timeframe, 2018-05-11 to 2018-06-14 ") +  
+    theme(plot.title = element_text(hjust = 0.5)) +
+stat_summary(fun.y = mean, geom="point",colour="darkred", size=4) +
+stat_summary(fun.data = meanFunction, geom="text", size = 4, vjust=1.3)
+
+t.test(data = SessionLengthDevices,sess_length_min ~ category)
+
+```
+
+#### Where are the users spending their most times on?
+It will be interesting to analyze user engagement at an issue level to be able to answer questions like:  
+1. Are digital flip viewed equally across mobile and tablet?  
+  
+*Assumption: One session/user/day*
+
+```{r echo=FALSE,message=FALSE,warning=FALSE}
+sql_string <- "
+#standardSQL
+SELECT user_dim.app_info.app_instance_id,
+event.name, 
+param.key, 
+param.value.string_value,
+TIMESTAMP_MICROS(CAST(timestamp_micros as INT64)) as dt,
+'IOS' as platform
+FROM `digital-showcase-app-fbb95.com_marykay_showandsell_IOS.app_events_*`, 
+  UNNEST(event_dim) as event,
+  UNNEST(event.params) as param
+WHERE event.name = 'Issue_Opened' and param.key = 'issue' and _TABLE_SUFFIX BETWEEN '20180511' AND '20180614'
+
+UNION ALL
+
+SELECT user_dim.app_info.app_instance_id,
+event.name, 
+param.key, 
+param.value.string_value,
+TIMESTAMP_MICROS(CAST(timestamp_micros as INT64)) as dt,
+'Android' as platform
+FROM `digital-showcase-app-fbb95.com_scrollMotion_maryKay_ANDROID.app_events_*`, 
+  UNNEST(event_dim) as event,
+  UNNEST(event.params) as param
+WHERE event.name = 'Issue_Opened' and param.key = 'action' and _TABLE_SUFFIX BETWEEN '20180511' AND '20180614'
+"
+
+Issue_Download <- query_exec(sql_string, project = project_id, use_legacy_sql = FALSE)
+
+# list <- Issue_Download %>%
+#   distinct(string_value)
+# Issue_Download
+# list
+
+# number of downloads for each Issue
+
+NumDownload <- Issue_Download %>%
+  mutate(Issue = ifelse(grepl("DigitalFlipChart",string_value,ignore.case = TRUE),"DigitalFlipChart",
+                        ifelse(grepl("DFC",string_value,ignore.case = TRUE),"DigitalFlipChart",
+                               ifelse(grepl("Star.*consultant",string_value,ignore.case = TRUE),"Starconsultant",
+                                      ifelse(grepl("seminar.*souv",string_value,ignore.case = TRUE),"seminarsouvenirs",
+                                             ifelse(grepl("seminar.*award",string_value,ignore.case = TRUE),"Seminaraward",
+                                                    ifelse(grepl("Show.*and.*Sell",string_value,ignore.case = TRUE),"ShowandSell",
+                                                           ifelse(grepl("Love.*What.*You.Do",string_value,ignore.case = TRUE),"LoveWhatYouDo",
+                                                                  ifelse(grepl("*Untitled*",string_value,ignore.case = TRUE),"Untitled",
+                                             "others")
+                               ))))))),
+         date = date(dt)) %>%
+  select(-dt) %>%
+  filter(string_value != '') %>%
+  distinct() %>%
+  group_by(platform,Issue) %>%
+  summarise(Downloads = length(Issue)) %>%
+  arrange(desc(Downloads)) %>%
+  top_n(n=1000,wt = Downloads)
+
+
+NumDownload %>%
+  ggplot(aes(x=Issue, y=Downloads)) + 
+  geom_point(size=3) + 
+  geom_segment(aes(x=Issue, 
+                   xend=Issue, 
+                   y=0, 
+                   yend=Downloads))+ 
+  facet_grid(~platform, scales = "free")  +
+  xlab("Issue Name") + ylab('# of Views') +
+  labs(title="Top 10 Issue view across platforms") + 
+  theme(plot.title = element_text(hjust = 0.5),axis.text.x = element_text(angle=65, hjust = 1),axis.text=element_text(size=7))
+  
+```
+  
+### and issue open across devices  
+```{r, echo=FALSE,message=FALSE,warning=FALSE}
+sql_string <- "
+#standardSQL
+SELECT user_dim.app_info.app_instance_id,
+event.name, 
+param.key, 
+param.value.string_value,
+TIMESTAMP_MICROS(CAST(timestamp_micros as INT64)) as dt,
+user_dim.device_info.device_category as category
+FROM `digital-showcase-app-fbb95.com_marykay_showandsell_IOS.app_events_*`, 
+  UNNEST(event_dim) as event,
+  UNNEST(event.params) as param
+WHERE event.name = 'Issue_Opened' and param.key = 'issue' and _TABLE_SUFFIX BETWEEN '20180511' AND '20180614'
+
+UNION ALL
+
+SELECT user_dim.app_info.app_instance_id,
+event.name, 
+param.key, 
+param.value.string_value,
+TIMESTAMP_MICROS(CAST(timestamp_micros as INT64)) as dt,
+user_dim.device_info.device_category as category
+FROM `digital-showcase-app-fbb95.com_scrollMotion_maryKay_ANDROID.app_events_*`, 
+  UNNEST(event_dim) as event,
+  UNNEST(event.params) as param
+WHERE event.name = 'Issue_Opened' and param.key = 'action' and _TABLE_SUFFIX BETWEEN '20180511' AND '20180614'
+"
+
+IssueDevices <- query_exec(sql_string, project = project_id, use_legacy_sql = FALSE)
+
+# list <- Issue_Download %>%
+#   distinct(string_value)
+# Issue_Download
+# list
+
+# number of downloads for each Issue
+
+NumDevDownload <- IssueDevices %>%
+  mutate(Issue = ifelse(grepl("DigitalFlipChart",string_value,ignore.case = TRUE),"DigitalFlipChart",
+                        ifelse(grepl("DFC",string_value,ignore.case = TRUE),"DigitalFlipChart",
+                               ifelse(grepl("Star.*consultant",string_value,ignore.case = TRUE),"Starconsultant",
+                                      ifelse(grepl("seminar.*souv",string_value,ignore.case = TRUE),"seminarsouvenirs",
+                                             ifelse(grepl("seminar.*award",string_value,ignore.case = TRUE),"Seminaraward",
+                                                    ifelse(grepl("Show.*and.*Sell",string_value,ignore.case = TRUE),"ShowandSell",
+                                                           ifelse(grepl("Love.*What.*You.Do",string_value,ignore.case = TRUE),"LoveWhatYouDo",
+                                                                  ifelse(grepl("*Untitled*",string_value,ignore.case = TRUE),"Untitled",
+                                             "others")
+                               ))))))),
+         date = date(dt)) %>%
+  select(-dt) %>%
+  filter(string_value != '') %>%
+  distinct() %>%
+  group_by(category,Issue) %>%
+  summarise(Downloads = length(Issue)) %>%
+  arrange(desc(Downloads)) %>%
+  top_n(n=1000,wt = Downloads)
+
+
+NumDevDownload %>%
+  ggplot(aes(x=Issue, y=Downloads)) + 
+  geom_point(size=3) + 
+  geom_segment(aes(x=Issue, 
+                   xend=Issue, 
+                   y=0, 
+                   yend=Downloads))+ 
+  facet_grid(~category, scales = "free")  +
+  xlab("Issue Name") + ylab('# of Views') + 
+  theme(plot.title = element_text(hjust = 0.5),axis.text.x = element_text(angle=65, hjust = 1),axis.text=element_text(size=7))
+```
+
+#### Analysing the page views within each issue
+```{r}
+sql_string <- "
+#standardSQL
+SELECT user_dim.app_info.app_instance_id,
+event.name, 
+param.key, 
+param.value.string_value,
+TIMESTAMP_MICROS(CAST(timestamp_micros as INT64)) as dt,
+user_dim.device_info.device_category as category
+FROM `digital-showcase-app-fbb95.com_marykay_showandsell_IOS.app_events_*`, 
+  UNNEST(event_dim) as event,
+  UNNEST(event.params) as param
+WHERE event.name = 'Article_Viewed' and _TABLE_SUFFIX BETWEEN '20180511' AND '20180514' and (param.key = 'issue' or param.key = 'label')
+"
+
+PagesViewDev <- query_exec(sql_string, project = project_id, use_legacy_sql = FALSE)
+
+PagesViewGID <- PagesViewDev %>%
+mutate(groupID = (PagesViewDev %>% group_indices(app_instance_id,dt))) %>%
+  unique()
+
+# PagesViewDev <- PagesViewDev %>% 
+#   bind_cols(GroupId = group_indices(., app_instance_id, dt))
+#   
+# PagesViewDev %>%  mutate(., group = group_indices(., dt))
+  # group_by(app_instance_id, dt) %>% 
+  # mutate(flag = as.numeric(as.factor(dt)))
+  # mutate(id = seq_len(n()))
+  # df %>% group_by(personid) %>% mutate(id = 1:n())
+  # df %>% group_by(personid) %>% mutate(id = seq_len(n()))
+  # df %>% group_by(personid) %>% mutate(id = seq_along(personid))
+
+# Transforming the dataset into wide structure
+TopViews <- PagesViewGID %>%
+  select(groupID,key,string_value) %>%
+  spread(key = key,string_value) %>%
+  mutate(cnt = 1,Issue = ifelse(grepl("DigitalFlipChart",issue,ignore.case = TRUE),"DigitalFlipChart",
+                        ifelse(grepl("DFC",issue,ignore.case = TRUE),"DigitalFlipChart",
+                               ifelse(grepl("Star.*consultant",issue,ignore.case = TRUE),"Starconsultant",
+                                      ifelse(grepl("seminar.*souv",issue,ignore.case = TRUE),"seminarsouvenirs",
+                                             ifelse(grepl("seminar.*award",issue,ignore.case = TRUE),"Seminaraward",
+                                                    ifelse(grepl("Show.*and.*Sell",issue,ignore.case = TRUE),"ShowandSell",
+                                                           ifelse(grepl("Love.*What.*You.Do",issue,ignore.case = TRUE),"LoveWhatYouDo",
+                                                                  ifelse(grepl("*Untitled*",issue,ignore.case = TRUE),"Untitled",
+                                             "others")
+                               )))))))) %>%
+  group_by(Issue,label) %>%
+  summarise(count = sum(cnt)) %>%
+  top_n(n=5,wt = count)
+
+TopViews %>% 
+  filter(Issue != "Untitled" & Issue != 'others') %>%
+  ggplot(aes(reorder(label,count),count),fill = label) +
+  geom_bar(stat = "identity") +
+   coord_flip()+
+  facet_wrap( ~ Issue, ncol = 2,scales = 'free', shrink = FALSE,as.table = FALSE) +
+  theme(plot.title = element_text(hjust = 0.5),axis.text.x=element_text(angle=45, hjust=1),axis.text=element_text(size=7), axis.ticks.x=element_blank(),panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + labs(x="",y="page visits")
+
+```
+
+#### Which are the highly played videos within the application  
+1. Are the informational videos reaching its intended audience?
+2. Do the videos have enough reach within the IBCs?
+```{r}
+sql_string <- "
+#standardSQL
+SELECT user_dim.app_info.app_instance_id,
+event.name, 
+param.key, 
+param.value.string_value,
+TIMESTAMP_MICROS(CAST(timestamp_micros as INT64)) as dt,
+user_dim.device_info.device_category as category
+FROM `digital-showcase-app-fbb95.com_marykay_showandsell_IOS.app_events_*`, 
+  UNNEST(event_dim) as event,
+  UNNEST(event.params) as param
+WHERE event.name = 'Video_Played' and _TABLE_SUFFIX BETWEEN '20180511' AND '20180514' and (param.key = 'issue' or param.key = 'label')
+"
+
+VideosView <- query_exec(sql_string, project = project_id, use_legacy_sql = FALSE)
+
+VideoSumm <- VideosView %>%
+  filter(key == 'label') %>%
+  mutate(cnt =1, Lang = ifelse(grepl("spanish",string_value,ignore.case = TRUE),"Spanish",ifelse(grepl("Spanish",string_value,ignore.case = TRUE),"Spanish","English"))) %>%
+  group_by(category,Lang, string_value) %>%
+  summarise(Plays = sum(cnt))
+
+VideoSumm %>%
+  ggplot(aes(string_value,Plays)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(Lang ~ category, scales = "free")
+  
+
+```
+
+### Next Steps  
+Having established that flipcharts are the used across platform and devices, it will be worth analyzing the time spent on various pages within each issue and understand  
+1. Which pages get the most screen time during any visit?  
+2. Are they using the interactive components present within each issue  
+  
+It will be interesting to look at user acquisition as well
+1. Which channel generates the most users? Most valuable users?
+
