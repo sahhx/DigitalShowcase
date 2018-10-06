@@ -51,7 +51,7 @@ But first let's start with the descriptive statistics:
 
 ```{r echo=FALSE,message=FALSE,warning=FALSE}
 # Use your project ID here
-project_id <- "digital-showcase-app-fbb95" # put your project ID here
+project_id <- "#########################" # put your project ID here
 
 # Example query
 
